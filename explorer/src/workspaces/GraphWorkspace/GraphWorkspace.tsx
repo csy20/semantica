@@ -30,6 +30,7 @@ import { createGraphLoadProgress, getGraphLoadTitle } from "./graphLoading";
 import { GRAPH_THEME, withAlpha } from "./graphTheme";
 import { buildGraphColorLegend, type GraphColorLegendItem } from "./graphColorLegend";
 import { focusedUnavailableReasonText, groupedViewReasonText } from "./graphViewCopy";
+import { localGraphRequiresDraftConfirm } from "./localGraphTransition";
 import { buildHeatmapRenderSnapshot, buildStructuralDistanceSnapshot, checkGroupedViewAvailability, getDistanceBandColor, resolveDisplayGraph, resolveDisplayStateSnapshot, resolveGroupedDisplayNodeId, resolveGroupedDisplayStateSnapshot, summarizeDistanceBuckets } from "./graphSceneState";
 import {
   type GraphPlugin,
@@ -1647,17 +1648,28 @@ export function GraphWorkspace({ externalFocusNodeId, externalFocusToken, onDirt
 
 
   const enterLocalGraph = useCallback((nodeId: string) => {
-    if (viewMode !== "focused" && !confirmDiscardMarkdownDraft()) return;
     const resolution = resolveNodeIdForFocusedMode(nodeId, pluginRuntimeRef.current?.displayGraph);
     if (!resolution.resolvedNodeId) {
       return;
     }
 
-    setFocusedNodeId(resolution.resolvedNodeId);
-    setSelectedNodeId(resolution.resolvedNodeId);
+    const nextNodeId = resolution.resolvedNodeId;
+    const requiresDraftConfirm = localGraphRequiresDraftConfirm(viewMode, selectedNodeId, nextNodeId);
+    if (requiresDraftConfirm && !confirmDiscardMarkdownDraft()) {
+      return;
+    }
+
+    setFocusedNodeId(nextNodeId);
+    setSelectedNodeId(nextNodeId);
+    if (requiresDraftConfirm) {
+      setSelectedEdgeId("");
+      setPathResult(null);
+      setSearchResults([]);
+      setSearchError("");
+    }
     setViewMode("focused");
     setIsLayoutRunning(false);
-  }, [confirmDiscardMarkdownDraft, resolveNodeIdForFocusedMode, viewMode]);
+  }, [confirmDiscardMarkdownDraft, resolveNodeIdForFocusedMode, selectedNodeId, viewMode]);
 
   const setLayoutViewMode = useCallback((nextViewMode: GraphLayoutViewMode) => {
     if (nextViewMode !== viewMode && !confirmDiscardMarkdownDraft()) return;
