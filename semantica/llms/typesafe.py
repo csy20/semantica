@@ -4,10 +4,10 @@ This module wraps TypeSafe's System One API as a decision-only provider.  Jev
 does not generate free text, so :class:`Jev` and :class:`AsyncJev` deliberately
 do not expose the ``generate`` methods implemented by chat-LLM providers.
 
-The optional ``typesafe-sdk`` dependency requires Python 3.10 or newer.  The
-guarded import below keeps ``import semantica.llms`` working on Semantica's
-Python 3.9 baseline; a clear error is raised only when a caller attempts a Jev
-request without the dependency installed.
+The optional ``typesafe-sdk`` dependency is guarded so that
+``import semantica.llms`` keeps working when the SDK is not installed; a clear
+error is raised only when a caller attempts a Jev request without the optional
+dependency.
 """
 
 from __future__ import annotations
