@@ -125,9 +125,18 @@ class _JevBase:
         """
 
         return self._client is not None or (
-            TYPESAFE_AVAILABLE
-            and bool(self.api_key or os.environ.get("TYPESAFE_API_KEY"))
+            TYPESAFE_AVAILABLE and self._has_configured_api_key()
         )
+
+    def _has_configured_api_key(self) -> bool:
+        """Return whether the effective API key contains non-whitespace text."""
+
+        api_key = (
+            self.api_key
+            if self.api_key is not None
+            else os.environ.get("TYPESAFE_API_KEY")
+        )
+        return isinstance(api_key, str) and bool(api_key.strip())
 
     @staticmethod
     def _normalize_choice_criteria(
@@ -276,14 +285,18 @@ class _JevBase:
             confidence = cls._validate_probability(
                 cls._read_field(answer, "confidence"), "Choice confidence"
             )
-            raw_probabilities = cls._read_field(answer, "probabilities", {})
-            if isinstance(raw_probabilities, Mapping):
-                probabilities = {
-                    str(label): cls._validate_probability(
-                        raw_probability, f"Choice probability for {label!r}"
-                    )
-                    for label, raw_probability in raw_probabilities.items()
-                }
+            raw_probabilities = cls._read_field(answer, "probabilities")
+            if not isinstance(raw_probabilities, Mapping):
+                raise ProcessingError(
+                    "TypeSafe returned invalid Choice probabilities; "
+                    "expected a mapping"
+                )
+            probabilities = {
+                str(label): cls._validate_probability(
+                    raw_probability, f"Choice probability for {label!r}"
+                )
+                for label, raw_probability in raw_probabilities.items()
+            }
             probability = probabilities.get(value, confidence)
 
         elif kind == "noul":
@@ -305,19 +318,36 @@ class _JevBase:
                 cls._read_field(answer, "confidence"), "Score confidence"
             )
             probability = None
-            raw_probabilities = cls._read_field(answer, "probabilities", {})
-            if isinstance(raw_probabilities, Mapping):
+            raw_probabilities = cls._read_field(answer, "probabilities")
+            if not isinstance(raw_probabilities, Mapping):
+                raise ProcessingError(
+                    "TypeSafe returned invalid Score probabilities; "
+                    "expected a mapping"
+                )
+            try:
                 probabilities = {
                     int(level): cls._validate_probability(
                         raw_probability, f"Score probability for level {level!r}"
                     )
                     for level, raw_probability in raw_probabilities.items()
                 }
-            raw_legend = cls._read_field(answer, "legend", {})
-            if isinstance(raw_legend, Mapping):
+            except (TypeError, ValueError) as exc:
+                raise ProcessingError(
+                    "TypeSafe returned a non-integer Score probability level"
+                ) from exc
+            raw_legend = cls._read_field(answer, "legend")
+            if not isinstance(raw_legend, Mapping):
+                raise ProcessingError(
+                    "TypeSafe returned an invalid Score legend; expected a mapping"
+                )
+            try:
                 legend = {
                     int(level): description for level, description in raw_legend.items()
                 }
+            except (TypeError, ValueError) as exc:
+                raise ProcessingError(
+                    "TypeSafe returned a non-integer Score legend level"
+                ) from exc
 
         else:
             raise ProcessingError(
@@ -379,6 +409,13 @@ class _JevBase:
                     "TypeSafe returned Choice probabilities outside the requested "
                     f"criteria: {labels}"
                 )
+            missing_labels = allowed_labels - set(result.probabilities)
+            if missing_labels:
+                labels = ", ".join(repr(label) for label in sorted(missing_labels))
+                raise ProcessingError(
+                    "TypeSafe omitted Choice probabilities for requested criteria: "
+                    f"{labels}"
+                )
 
         elif requested_kind == "score":
             if not isinstance(criteria, Sequence) or isinstance(
@@ -403,13 +440,42 @@ class _JevBase:
                     "TypeSafe returned Score levels outside the requested criteria: "
                     f"{levels}"
                 )
+            missing_probability_levels = allowed_levels - set(result.probabilities)
+            if missing_probability_levels:
+                levels = ", ".join(
+                    str(level) for level in sorted(missing_probability_levels)
+                )
+                raise ProcessingError(
+                    "TypeSafe omitted Score probabilities for requested levels: "
+                    f"{levels}"
+                )
+            missing_legend_levels = allowed_levels - set(result.legend)
+            if missing_legend_levels:
+                levels = ", ".join(
+                    str(level) for level in sorted(missing_legend_levels)
+                )
+                raise ProcessingError(
+                    "TypeSafe omitted Score legend entries for requested levels: "
+                    f"{levels}"
+                )
+            mismatched_legend_levels = [
+                level
+                for level, expected_description in enumerate(criteria)
+                if result.legend[level] != expected_description
+            ]
+            if mismatched_legend_levels:
+                levels = ", ".join(str(level) for level in mismatched_legend_levels)
+                raise ProcessingError(
+                    "TypeSafe returned Score legend entries that did not match "
+                    f"the requested criteria at levels: {levels}"
+                )
 
     def _require_available(self) -> None:
         if self._client is not None:
             return
         if not TYPESAFE_AVAILABLE:
             raise ProcessingError(_DEPENDENCY_ERROR)
-        if not (self.api_key or os.environ.get("TYPESAFE_API_KEY")):
+        if not self._has_configured_api_key():
             raise ProcessingError(_CREDENTIAL_ERROR)
 
 

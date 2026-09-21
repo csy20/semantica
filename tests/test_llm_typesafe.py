@@ -76,6 +76,17 @@ def test_is_available_requires_local_credentials(monkeypatch):
     assert Jev().is_available() is True
 
 
+def test_whitespace_only_credentials_are_rejected(monkeypatch):
+    monkeypatch.setattr(typesafe_module, "TYPESAFE_AVAILABLE", True)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "   ")
+
+    assert Jev().is_available() is False
+    assert Jev(api_key="\t").is_available() is False
+
+    with pytest.raises(ProcessingError, match="TYPESAFE_API_KEY"):
+        Jev().decide("state", "question", "noul")
+
+
 def test_missing_credentials_raise_clear_error(monkeypatch):
     monkeypatch.setattr(typesafe_module, "TYPESAFE_AVAILABLE", True)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
@@ -298,6 +309,41 @@ def test_choice_response_must_stay_inside_requested_labels():
         )
 
 
+@pytest.mark.parametrize("probabilities", [None, [], "approve=1"])
+def test_choice_response_requires_probability_mapping(probabilities):
+    client = MagicMock()
+    client.system_one.return_value = _response(
+        _answer(
+            "choice",
+            choice="approve",
+            confidence=1.0,
+            probabilities=probabilities,
+        )
+    )
+
+    with pytest.raises(ProcessingError, match="invalid Choice probabilities"):
+        Jev(client=client).decide(
+            "state", "Choose a route", "choice", choices=["approve", "escalate"]
+        )
+
+
+def test_choice_response_requires_every_requested_probability():
+    client = MagicMock()
+    client.system_one.return_value = _response(
+        _answer(
+            "choice",
+            choice="approve",
+            confidence=1.0,
+            probabilities={"approve": 1.0},
+        )
+    )
+
+    with pytest.raises(ProcessingError, match="omitted Choice probabilities.*escalate"):
+        Jev(client=client).decide(
+            "state", "Choose a route", "choice", choices=["approve", "escalate"]
+        )
+
+
 @pytest.mark.parametrize(
     "answer, message",
     [
@@ -336,6 +382,104 @@ def test_score_response_must_stay_inside_requested_levels(answer, message):
         )
 
 
+@pytest.mark.parametrize(
+    "answer, message",
+    [
+        (
+            _answer(
+                "score",
+                score=1.5,
+                confidence=0.9,
+                probabilities=None,
+                legend={0: "low", 1: "medium", 2: "high"},
+            ),
+            "invalid Score probabilities",
+        ),
+        (
+            _answer(
+                "score",
+                score=1.5,
+                confidence=0.9,
+                probabilities={0: 0.1, 1: 0.3, 2: 0.6},
+                legend=None,
+            ),
+            "invalid Score legend",
+        ),
+        (
+            _answer(
+                "score",
+                score=1.5,
+                confidence=0.9,
+                probabilities={0: 0.1, 1: 0.9},
+                legend={0: "low", 1: "medium", 2: "high"},
+            ),
+            "omitted Score probabilities.*2",
+        ),
+        (
+            _answer(
+                "score",
+                score=1.5,
+                confidence=0.9,
+                probabilities={0: 0.1, 1: 0.3, 2: 0.6},
+                legend={0: "low", 1: "medium"},
+            ),
+            "omitted Score legend entries.*2",
+        ),
+        (
+            _answer(
+                "score",
+                score=1.5,
+                confidence=0.9,
+                probabilities={0: 0.1, 1: 0.3, 2: 0.6},
+                legend={0: "low", 1: "moderate", 2: "high"},
+            ),
+            "did not match.*1",
+        ),
+    ],
+)
+def test_score_response_requires_complete_matching_metadata(answer, message):
+    client = MagicMock()
+    client.system_one.return_value = _response(answer)
+
+    with pytest.raises(ProcessingError, match=message):
+        Jev(client=client).decide(
+            "state",
+            "How urgent is this?",
+            "score",
+            criteria=["low", "medium", "high"],
+        )
+
+
+def test_owned_sync_client_uses_sdk_model_default_and_request_override(monkeypatch):
+    client = MagicMock()
+    client.system_one.return_value = _response(_answer("noul", noul=0.9))
+    client_type = MagicMock(return_value=client)
+    monkeypatch.setattr(typesafe_module, "TYPESAFE_AVAILABLE", True)
+    monkeypatch.setattr(typesafe_module, "TypeSafeClient", client_type)
+    monkeypatch.setattr(
+        typesafe_module,
+        "Noul",
+        lambda instructions, criteria: {
+            "type": "noul",
+            "instructions": instructions,
+            "criteria": criteria,
+        },
+    )
+
+    Jev(
+        model="jev-default",
+        api_key="test-key",
+        base_url="https://example.test",
+    ).decide("state", "question", "noul", model="jev-request")
+
+    client_type.assert_called_once_with(
+        api_key="test-key",
+        model="jev-default",
+        base_url="https://example.test",
+    )
+    assert client.system_one.call_args.kwargs["model"] == "jev-request"
+
+
 @pytest.mark.asyncio
 async def test_async_jev_has_sync_result_parity_and_forwards_options():
     client = SimpleNamespace(system_one=AsyncMock(return_value=_choice_response()))
@@ -353,6 +497,40 @@ async def test_async_jev_has_sync_result_parity_and_forwards_options():
     assert call.kwargs["model"] == "jev-preview"
     payload = _question_payload(call.kwargs["questions"]["decision"])
     assert payload["criteria"] == {"approve": None, "escalate": None}
+
+
+@pytest.mark.asyncio
+async def test_owned_async_client_uses_sdk_model_default_and_request_override(
+    monkeypatch,
+):
+    client = SimpleNamespace(
+        system_one=AsyncMock(return_value=_response(_answer("noul", noul=0.9)))
+    )
+    client_type = MagicMock(return_value=client)
+    monkeypatch.setattr(typesafe_module, "TYPESAFE_AVAILABLE", True)
+    monkeypatch.setattr(typesafe_module, "AsyncTypeSafeClient", client_type)
+    monkeypatch.setattr(
+        typesafe_module,
+        "Noul",
+        lambda instructions, criteria: {
+            "type": "noul",
+            "instructions": instructions,
+            "criteria": criteria,
+        },
+    )
+
+    await AsyncJev(
+        model="jev-default",
+        api_key="test-key",
+        base_url="https://example.test",
+    ).decide("state", "question", "noul", model="jev-request")
+
+    client_type.assert_called_once_with(
+        api_key="test-key",
+        model="jev-default",
+        base_url="https://example.test",
+    )
+    assert client.system_one.call_args.kwargs["model"] == "jev-request"
 
 
 def test_result_round_trips_as_decision_provenance():
