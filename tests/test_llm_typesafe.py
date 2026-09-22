@@ -1,5 +1,7 @@
 """Tests for the decision-only TypeSafe Jev provider wrappers."""
 
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -568,3 +570,131 @@ def test_pyproject_guards_sdk_on_python_310_and_includes_aggregate_extra():
         "typesafe-sdk>=0.7.0,<0.8.0; python_version >= '3.10'"
     ]
     assert "llm-typesafe" in extras["llm-all"][0]
+
+
+@pytest.fixture
+def real_sdk_transport():
+    """Exercise the published SDK without making network requests."""
+    pytest.importorskip("typesafe_sdk")
+    httpx = pytest.importorskip("httpx2")
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        question = payload["questions"]["decision"]
+        kind = question["type"]
+        if kind == "choice":
+            answer = {
+                "type": kind,
+                "choice": "approve",
+                "confidence": 0.91,
+                "probabilities": {"approve": 0.91, "escalate": 0.09},
+            }
+        elif kind == "score":
+            answer = {
+                "type": kind,
+                "score": 0.8,
+                "confidence": 0.8,
+                "probabilities": {"0": 0.2, "1": 0.8},
+                "legend": {"0": "low", "1": "high"},
+            }
+        else:
+            answer = {"type": "noul", "noul": 0.9}
+        return httpx.Response(
+            200,
+            headers={"x-typesafe-request-id": "req_transport"},
+            json={
+                "answers": {"decision": answer},
+                "model": "jev-concrete",
+                "usage": {"input_tokens": 12, "output_tokens": 2},
+            },
+        )
+
+    return httpx.MockTransport(respond), requests
+
+
+def _assert_real_sdk_result(result, kind):
+    assert result.kind == kind
+    assert result.model == "jev-concrete"
+    assert result.request_id == "req_transport"
+    assert result.usage == {"input_tokens": 12, "output_tokens": 2}
+    if kind == "choice":
+        assert result.probabilities == {"approve": 0.91, "escalate": 0.09}
+    elif kind == "score":
+        assert result.probabilities == {0: 0.2, 1: 0.8}
+        assert result.legend == {0: "low", 1: "high"}
+    else:
+        assert result.value is True
+        assert result.probability == 0.9
+
+
+@pytest.mark.parametrize(
+    "kind, options",
+    [
+        ("choice", {"choices": ["approve", "escalate"]}),
+        ("noul", {}),
+        ("score", {"criteria": ["low", "high"]}),
+    ],
+)
+def test_real_owned_sdk_sync_dispatch_and_model_precedence(
+    real_sdk_transport, kind, options
+):
+    transport, requests = real_sdk_transport
+    with Jev(api_key="test-key", model="jev-default", transport=transport) as provider:
+        for request_options in ({}, {"model": "jev-override"}, {}):
+            result = provider.decide(
+                "state", "question", kind, **options, **request_options
+            )
+            _assert_real_sdk_result(result, kind)
+    assert [request["model"] for request in requests] == [
+        "jev-default",
+        "jev-override",
+        "jev-default",
+    ]
+    assert all(request["state"] == "state" for request in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind, options",
+    [
+        ("choice", {"choices": ["approve", "escalate"]}),
+        ("noul", {}),
+        ("score", {"criteria": ["low", "high"]}),
+    ],
+)
+async def test_real_owned_sdk_async_dispatch_and_model_precedence(
+    real_sdk_transport, kind, options
+):
+    transport, requests = real_sdk_transport
+    async with AsyncJev(
+        api_key="test-key", model="jev-default", transport=transport
+    ) as provider:
+        for request_options in ({}, {"model": "jev-override"}, {}):
+            result = await provider.decide(
+                "state", "question", kind, **options, **request_options
+            )
+            _assert_real_sdk_result(result, kind)
+    assert [request["model"] for request in requests] == [
+        "jev-default",
+        "jev-override",
+        "jev-default",
+    ]
+    assert all(request["state"] == "state" for request in requests)
+
+
+def test_typesafe_ci_pin_and_hashes_match_uv_lock():
+    root = Path(__file__).resolve().parents[1]
+    lock = toml.load(root / "uv.lock")
+    package = next(p for p in lock["package"] if p["name"] == "typesafe-sdk")
+    requirements = (root / "requirements-ci.txt").read_text()
+    entry = re.search(
+        r"(?m)^typesafe-sdk==([^\n]+)\n((?:    --hash=[^\n]+\n)+)", requirements
+    )
+    assert entry is not None
+    assert entry.group(1).split()[0] == package["version"]
+    expected_hashes = {package["sdist"]["hash"]} | {
+        wheel["hash"] for wheel in package["wheels"]
+    }
+    assert set(re.findall(r"sha256:[a-f0-9]+", entry.group(2))) == expected_hashes
