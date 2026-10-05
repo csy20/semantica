@@ -96,7 +96,10 @@ reports = graph["metadata"]["content_screening"]
 
 The dependency-free `baseline` scanner flags a small set of English instruction
 overrides and credential-disclosure requests, plus HTML comments containing
-those patterns. These are heuristic review signals: quoted or negated examples
+those patterns. The comment then has one `hidden_html_instruction` finding
+spanning the whole comment, plus one finding for each baseline pattern that
+matched inside it. Those are separate findings for the same region. These are
+heuristic review signals: quoted or negated examples
 can match, and obfuscated or other-language attacks can be missed. No findings
 does **not** certify safe content. Extraction still receives the original text,
 including when an LLM extractor is selected.
