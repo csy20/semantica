@@ -49,7 +49,13 @@ from typing import Any, Dict, List, Optional
 
 from ..utils.logging import get_logger
 from ..utils.progress_tracker import get_progress_tracker
-from ._graph_view import build_adjacency, build_graph_view
+from ._graph_view import (
+    build_adjacency,
+    build_graph_view,
+    edge_types_between,
+    graph_node_ids,
+    graph_node_label,
+)
 
 
 def _is_hashable(value: Any) -> bool:
@@ -844,23 +850,18 @@ class CommunityDetector:
     
     def _filter_nodes_by_labels(self, graph: Any, node_labels: Optional[List[str]]) -> List[str]:
         """Filter nodes by specified labels."""
+        nodes = graph_node_ids(graph)
+
         if node_labels is None:
-            return list(graph.nodes()) if hasattr(graph, 'nodes') else []
-        
+            return nodes
+
         filtered_nodes = []
-        for node in graph.nodes():
-            if hasattr(graph, 'nodes'):
-                node_data = graph.nodes[node]
-                if isinstance(node_data, dict):
-                    node_label = node_data.get('label') or node_data.get('type')
-                    if node_label in node_labels:
-                        filtered_nodes.append(node)
-                else:
-                    # Fallback - include all nodes if no label information
-                    filtered_nodes.append(node)
-        
+        for node in nodes:
+            if graph_node_label(graph, node) in node_labels:
+                filtered_nodes.append(node)
+
         return filtered_nodes
-    
+
     def _build_filtered_adjacency(
         self, 
         graph: Any, 
@@ -886,15 +887,16 @@ class CommunityDetector:
                     if isinstance(n, dict) and n.get("id")
                 ]
             
-            # Filter by relationship types if specified
+            # Filter by relationship types if specified. A graph whose edge
+            # types cannot be read keeps its neighbours, so the filter never
+            # turns an unclassifiable link into a silent removal.
             if relationship_types is not None and hasattr(graph, 'get_edge_data'):
+                wanted = set(relationship_types)
                 for neighbor in all_neighbors:
                     if neighbor in nodes:  # Only include filtered nodes
-                        edge_data = graph.get_edge_data(node, neighbor)
-                        if edge_data and isinstance(edge_data, dict):
-                            edge_type = edge_data.get('type') or edge_data.get('relationship')
-                            if edge_type in relationship_types:
-                                neighbors.append(neighbor)
+                        types = edge_types_between(graph, node, neighbor)
+                        if types is None or types & wanted:
+                            neighbors.append(neighbor)
             else:
                 # Include all neighbors that are in the filtered node set
                 neighbors = [neighbor for neighbor in all_neighbors if neighbor in nodes]
