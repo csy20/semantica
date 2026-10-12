@@ -187,7 +187,9 @@ def _assert_saved(path, expected):
 
 @pytest.mark.parametrize("deletion", ["delete", "erase"])
 @pytest.mark.parametrize("first_operation", ["delete", "store"])
-def test_same_id_insert_and_delete_follow_backend_order(deletion, first_operation):
+def test_same_id_insert_and_delete_follow_backend_order(
+    tmp_path, deletion, first_operation
+):
     store, backend = _make_store()
     first = deletion if first_operation == "delete" else "store"
     second = "store" if first_operation == "delete" else deletion
@@ -201,6 +203,8 @@ def test_same_id_insert_and_delete_follow_backend_order(deletion, first_operatio
     )
 
     _assert_records(store, backend, _expected(second))
+    store.save(str(tmp_path))
+    _assert_saved(tmp_path, _expected(second))
 
 
 @pytest.mark.parametrize("backend_name", ["faiss", "sqlite"])
